@@ -35,6 +35,21 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Optional imports with graceful degradation
 # ---------------------------------------------------------------------------
+HAS_SPYDEVICES = False
+HAS_TRAFFIC = False
+
+try:
+    import spydevices
+    HAS_SPYDEVICES = True
+except ImportError:
+    pass
+
+try:
+    import traffic as traffic_mod
+    HAS_TRAFFIC = True
+except ImportError:
+    pass
+
 HAS_PYTHON_NMAP = False
 HAS_ZEROCONF = False
 HAS_REQUESTS = False
@@ -582,6 +597,7 @@ class ScanContext:
         self.service_results: list[dict] = [] # Phase 4 results
         self.deep_results: list[dict] = []    # Phase 5 results
         self.classifications: list[dict] = [] # Phase 6 results
+        self.traffic_results: list = []       # Phase 5c results (traffic anomalies)
         self.counts = {"CRITICAL": 0, "HIGH": 0, "MODERATE": 0, "LOW": 0, "INFO": 0}
 
 
@@ -1154,6 +1170,19 @@ def _http_inspect(ip: str, port: str) -> list[dict]:
         if CAMERA_TITLE_RE.search(title):
             findings.append({"ip": ip, "port": port, "type": "CAMERA_TITLE", "detail": title})
 
+    # Spy-device database checks (HTTP Server header + body model strings)
+    if HAS_SPYDEVICES:
+        srv_hit = spydevices.match_spy_http_server(headers_text)
+        if srv_hit:
+            findings.append({"ip": ip, "port": port, "type": "SPY_HTTP_SERVER", "detail": srv_hit})
+        model_hit = spydevices.match_spy_model(body)
+        if model_hit:
+            findings.append({"ip": ip, "port": port, "type": "SPY_MODEL", "detail": model_hit})
+        if title_m:
+            title_model = spydevices.match_spy_model(title_m.group(1))
+            if title_model:
+                findings.append({"ip": ip, "port": port, "type": "SPY_MODEL", "detail": title_model})
+
     return findings
 
 
@@ -1267,6 +1296,12 @@ def phase6_classify(ctx: ScanContext) -> None:
     for sr in ctx.service_results:
         ip_services.setdefault(sr["ip"], set()).add(sr.get("stype", ""))
 
+    # Traffic anomaly lookup
+    ip_traffic: set[str] = set()
+    for ta in ctx.traffic_results:
+        if ta.ip and ta.ip != "(DNS)":
+            ip_traffic.add(ta.ip)
+
     for device in ctx.oui_results:
         ip = device["ip"]
         mac = device["mac"]
@@ -1295,14 +1330,54 @@ def phase6_classify(ctx: ScanContext) -> None:
         if has_hikvision_port or has_dahua_port or has_xmeye_port:
             has_vendor_port = True
 
+        # Spy-device database checks
+        has_spy_brand = False
+        spy_brand_name = ""
+        has_spy_combo = False
+        spy_combo_desc = ""
+        has_spy_model = "SPY_MODEL" in deep_types
+        has_spy_server = "SPY_HTTP_SERVER" in deep_types
+        if HAS_SPYDEVICES:
+            spy_brand_name, has_spy_brand = spydevices.match_spy_oui(mac)
+            port_ints = {int(p) for p in open_ports_set if p.isdigit()}
+            spy_combo_desc = spydevices.match_spy_port_combo(port_ints) or ""
+            has_spy_combo = bool(spy_combo_desc)
+
         # Classification logic
         risk = "INFO"
         device_type = "Unknown"
         evidence = ""
         recommendation = ""
 
-        # -- CRITICAL --
-        if classification == "TIER1_CAMERA" and (has_rtsp or has_vendor_port):
+        # -- CRITICAL (spy-device database matches) --
+        if has_spy_brand and (has_rtsp or has_vendor_port or has_spy_combo):
+            risk = "CRITICAL"
+            device_type = f"Known Spy Camera ({spy_brand_name})"
+            evidence = f"Spy-cam manufacturer {spy_brand_name} + streaming ports ({open_ports_str})"
+            recommendation = "KNOWN SPY CAMERA HARDWARE. Photograph and document immediately."
+        elif has_spy_combo and has_spy_model:
+            risk = "CRITICAL"
+            device_type = "Spy Camera (confirmed by firmware)"
+            evidence = f"Spy-cam port combo ({spy_combo_desc}) + firmware model match"
+            recommendation = "CONFIRMED SPY CAMERA FIRMWARE. Document and report."
+        elif has_spy_brand:
+            risk = "HIGH"
+            device_type = f"Known Spy Camera Brand ({spy_brand_name})"
+            evidence = f"MAC matches known spy-camera manufacturer: {spy_brand_name}"
+            recommendation = "Known spy-camera hardware. Investigate this device."
+        elif has_spy_combo:
+            risk = "HIGH"
+            device_type = "Likely Spy Camera (port signature)"
+            evidence = f"Port combination matches: {spy_combo_desc}"
+            recommendation = "Port combination matches known spy camera. Investigate."
+        elif has_spy_model or has_spy_server:
+            risk = "HIGH"
+            device_type = "Spy Camera Firmware Detected"
+            evidence = "HTTP response matches known spy-camera firmware"
+            recommendation = "Spy-camera firmware fingerprint detected. Investigate."
+
+        # -- CRITICAL (original) --
+        elif classification == "TIER1_CAMERA" and (has_rtsp or has_vendor_port):
             risk = "CRITICAL"
             device_type = "Surveillance Camera (confirmed)"
             evidence = f"Surveillance manufacturer ({manufacturer}) + streaming/control ports open ({open_ports_str})"
@@ -1677,6 +1752,18 @@ def main() -> None:
 
     # Phase 5: deep inspection (skipped in --quick mode)
     phase5_deep_inspection(ctx)
+
+    # Phase 5c: traffic anomaly detection
+    if HAS_TRAFFIC:
+        log_phase("5c", "Traffic Anomaly Detection")
+        ctx.traffic_results = traffic_mod.scan_traffic(
+            interface=ctx.interface, quick=ctx.args.quick,
+        )
+        if ctx.traffic_results:
+            for ta in ctx.traffic_results:
+                log_warn(f"Traffic anomaly: {ta.detail}")
+        else:
+            log_ok("No suspicious traffic patterns detected")
 
     # Phase 6: risk classification
     phase6_classify(ctx)
