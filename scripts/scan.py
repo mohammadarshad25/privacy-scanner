@@ -190,8 +190,9 @@ CAMERA_KEYWORDS_HIGH = (
     r"Shinobi|MotionEye|Frigate|ISAPI|Streaming/Channels|cam/realmonitor"
 )
 
+# Whole words only: generic terms otherwise match inside identifiers (e.g. "qrCodeContainer")
 CAMERA_KEYWORDS_MEDIUM = (
-    r"stream|video|media\.server|MJPEG|H\.264|H\.265|codec|bitrate|firmware|device\.info"
+    r"\b(?:stream|video|media\.server|MJPEG|H\.264|H\.265|codec|bitrate|firmware|device\.info)\b"
 )
 
 CAMERA_HEADERS = r"DNVRS-Webs|App-webs|Hikvision|Dahua|DH-IPC|uc-httpd|GoAhead-Webs|JAWS/|Boa/"
@@ -266,15 +267,26 @@ def run_cmd(cmd: list[str] | str, timeout: int = 30, shell: bool = False) -> tup
         return "", str(exc), 1
 
 
+def normalize_mac(mac: str) -> str:
+    """Return a MAC as 12 uppercase hex digits, zero-padding octets.
+
+    macOS `arp -a` drops leading zeros (e.g. '52:1c:a:6f:ff:d6'), so octets
+    must be padded before the separators are stripped.
+    """
+    mac = mac.strip()
+    if ":" in mac or "-" in mac:
+        return "".join(o.zfill(2) for o in re.split(r"[:-]", mac)).upper()
+    return mac.replace(".", "").upper()
+
+
 def mac_to_oui(mac: str) -> str:
     """Convert any MAC format to 6-char uppercase OUI (e.g. 'A4D5C2')."""
-    cleaned = mac.upper().replace(":", "").replace("-", "").replace(".", "")
-    return cleaned[:6]
+    return normalize_mac(mac)[:6]
 
 
 def is_mac_randomized(mac: str) -> bool:
     """Check locally-administered bit (bit 1 of first octet)."""
-    cleaned = mac.replace(":", "").replace("-", "").replace(".", "")
+    cleaned = normalize_mac(mac)
     if len(cleaned) < 2:
         return False
     try:
@@ -506,7 +518,8 @@ def get_arp_table() -> list[tuple[str, str]]:
                 if mac.lower() not in ("(incomplete)", "ff:ff:ff:ff:ff:ff", "ff-ff-ff-ff-ff-ff"):
                     results.append((ip, mac))
 
-    return results
+    # Skip multicast group entries (e.g. 224.0.0.251 mDNS, 239.255.255.250 SSDP) — not devices
+    return [(ip, mac) for ip, mac in results if not ipaddress.ip_address(ip).is_multicast]
 
 
 # ---------------------------------------------------------------------------

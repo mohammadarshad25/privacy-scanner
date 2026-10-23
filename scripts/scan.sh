@@ -143,7 +143,8 @@ done
 # ── Camera HTTP keywords ────────────────────────────────────────────────────
 CAMERA_KEYWORDS_HIGH="camera|webcam|ipcam|ip.cam|ipcamera|netcam|DVR|NVR|surveillance|security.cam|CCTV|hikvision|dahua|amcrest|reolink|foscam|wyze|ONVIF|onvif|rtsp://|live.view|liveview|snapshot|motion.detect|pan.tilt|PTZ|night.vision|DNVRS-Webs|App-webs|XMEye|NETSurveillance|IPCamera|IPCam|webcamXP|Yawcam|Blue.Iris|ZoneMinder|Shinobi|MotionEye|Frigate|ISAPI|Streaming/Channels|cam/realmonitor"
 
-CAMERA_KEYWORDS_MEDIUM="stream|video|media.server|MJPEG|H\\.264|H\\.265|codec|bitrate|firmware|device.info"
+# Whole words only: generic terms otherwise match inside identifiers (e.g. "qrCodeContainer")
+CAMERA_KEYWORDS_MEDIUM="\\b(stream|video|media.server|MJPEG|H\\.264|H\\.265|codec|bitrate|firmware|device.info)\\b"
 
 # ── HTTP Server headers that indicate cameras ───────────────────────────────
 CAMERA_HEADERS="DNVRS-Webs|App-webs|Hikvision|Dahua|DH-IPC|uc-httpd|GoAhead-Webs|JAWS/|Boa/"
